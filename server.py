@@ -76,6 +76,12 @@ class CodeExecutionRequest(BaseModel):
     language: str = "python"
 
 
+class DeleteMessageRequest(BaseModel):
+    """Request para remover mensagem de sessão JSONL."""
+    message_id: str | None = None
+    line_index: int | None = None
+
+
 @app.get("/")
 async def root():
     """Health check."""
@@ -134,11 +140,20 @@ async def get_conversation(conversation_id: str):
     return conversations[conversation_id]
 
 
+def find_session_file(session_id: str) -> Path | None:
+    """Localiza arquivo JSONL correspondente ao session_id."""
+    projects_path = Path.home() / ".claude" / "projects"
+
+    for jsonl_file in projects_path.rglob("*.jsonl"):
+        if session_id in jsonl_file.name:
+            return jsonl_file
+
+    return None
+
+
 @app.get("/sessions")
 async def list_sessions():
     """Lista todas as sessões .jsonl disponíveis."""
-    from pathlib import Path
-
     projects_path = Path.home() / ".claude" / "projects"
     sessions = []
 
@@ -177,31 +192,110 @@ async def list_sessions():
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     """Retorna sessão .jsonl do Claude SDK."""
-    from pathlib import Path
+    jsonl_file = find_session_file(session_id)
 
-    # Procurar arquivo .jsonl
-    projects_path = Path.home() / ".claude" / "projects"
+    if not jsonl_file:
+        return {"error": "Session not found"}, 404
 
-    for jsonl_file in projects_path.rglob("*.jsonl"):
-        if session_id in jsonl_file.name:
-            messages = []
-            with open(jsonl_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            messages.append(json.loads(line))
-                        except:
-                            pass
+    messages = []
+    with open(jsonl_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    messages.append(json.loads(line))
+                except:
+                    pass
 
-            return {
-                "session_id": session_id,
-                "file": str(jsonl_file),
-                "messages": messages,
-                "count": len(messages)
-            }
+    return {
+        "session_id": session_id,
+        "file": str(jsonl_file),
+        "messages": messages,
+        "count": len(messages)
+    }
 
-    return {"error": "Session not found"}, 404
+
+@app.delete("/sessions/{session_id}/messages")
+async def delete_session_message(session_id: str, request: DeleteMessageRequest):
+    """Remove uma mensagem específica do arquivo JSONL da sessão."""
+    if not request.message_id and request.line_index is None:
+        return {"error": "message_id ou line_index são obrigatórios"}, 400
+
+    jsonl_file = find_session_file(session_id)
+    if not jsonl_file:
+        return {"error": "Session not found"}, 404
+
+    kept_lines: list[str] = []
+    removed_entries: list[dict] = []
+
+    target_indices: set[int] = set()
+    if request.line_index is not None and request.line_index >= 0:
+        target_indices.add(request.line_index)
+
+    with open(jsonl_file, 'r', encoding='utf-8') as source:
+        for idx, raw_line in enumerate(source):
+            stripped = raw_line.strip()
+
+            if not stripped:
+                if idx not in target_indices:
+                    kept_lines.append(raw_line)
+                continue
+
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError:
+                if idx not in target_indices:
+                    kept_lines.append(raw_line)
+                continue
+
+            match = False
+
+            if idx in target_indices:
+                match = True
+
+            if request.message_id and not match:
+                candidates = [
+                    data.get("messageId"),
+                    data.get("id"),
+                    data.get("uuid"),
+                ]
+
+                msg = data.get("message")
+                if isinstance(msg, dict):
+                    candidates.extend([
+                        msg.get("id"),
+                        msg.get("messageId"),
+                    ])
+
+                if request.message_id in [c for c in candidates if c]:
+                    match = True
+
+            if match:
+                removed_entries.append(data)
+            else:
+                kept_lines.append(raw_line)
+
+    if not removed_entries:
+        return {"error": "Mensagem não encontrada"}, 404
+
+    temp_path = jsonl_file.with_suffix(jsonl_file.suffix + ".tmp")
+    with open(temp_path, 'w', encoding='utf-8') as target:
+        target.writelines(kept_lines)
+
+    temp_path.replace(jsonl_file)
+
+    return {
+        "session_id": session_id,
+        "removed_count": len(removed_entries),
+        "removed_ids": [
+            entry.get("messageId")
+            or entry.get("id")
+            or entry.get("uuid")
+            or (entry.get("message", {}) if isinstance(entry.get("message"), dict) else {}).get("id")
+        for entry in removed_entries
+        ],
+        "remaining_messages": len(kept_lines)
+    }
 
 
 @app.get("/conversations/{conversation_id}/export")
