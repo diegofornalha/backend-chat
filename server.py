@@ -23,6 +23,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     TextBlock,
     ThinkingBlock,
+    ToolUseBlock,
+    ToolResultBlock,
     ResultMessage,
 )
 
@@ -353,6 +355,8 @@ async def process_with_claude(message: str, conversation_id: str | None = None, 
     full_content = ""
     thinking_content = ""
 
+    tool_names: dict[str, str] = {}
+
     try:
         async with ClaudeSDKClient(options=options) as client:
             await client.query(message)
@@ -377,6 +381,35 @@ async def process_with_claude(message: str, conversation_id: str | None = None, 
                             yield {
                                 "type": "thinking",
                                 "content": block.thinking
+                            }
+
+                        elif isinstance(block, ToolUseBlock):
+                            tool_names[block.id] = block.name
+
+                            yield {
+                                "type": "tool_start",
+                                "tool": block.name,
+                                "tool_use_id": block.id,
+                                "input": block.input,
+                            }
+
+                        elif isinstance(block, ToolResultBlock):
+                            tool_name = tool_names.get(block.tool_use_id, "Ferramenta")
+
+                            if isinstance(block.content, list):
+                                try:
+                                    content_text = json.dumps(block.content, ensure_ascii=False, indent=2)
+                                except Exception:
+                                    content_text = str(block.content)
+                            else:
+                                content_text = block.content or ""
+
+                            yield {
+                                "type": "tool_result",
+                                "tool": tool_name,
+                                "tool_use_id": block.tool_use_id,
+                                "content": content_text,
+                                "is_error": block.is_error,
                             }
 
                 elif isinstance(msg, ResultMessage):
