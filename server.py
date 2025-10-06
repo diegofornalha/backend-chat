@@ -215,6 +215,24 @@ async def get_session(session_id: str):
     }
 
 
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Remove completamente uma sessão (arquivo JSONL)."""
+    jsonl_file = find_session_file(session_id)
+    if not jsonl_file:
+        return {"error": "Session not found"}, 404
+
+    try:
+        jsonl_file.unlink()
+        return {
+            "success": True,
+            "session_id": session_id,
+            "file": str(jsonl_file)
+        }
+    except Exception as e:
+        return {"error": f"Falha ao remover sessão: {str(e)}"}, 500
+
+
 @app.delete("/sessions/{session_id}/messages")
 async def delete_session_message(session_id: str, request: DeleteMessageRequest):
     """Remove uma mensagem específica do arquivo JSONL da sessão."""
