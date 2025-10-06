@@ -378,9 +378,15 @@ async def websocket_chat(websocket: WebSocket):
             print(f"📨 Mensagem recebida: {data}")
 
             message = request.get("message", "")
-            conversation_id = request.get("conversation_id") or str(uuid.uuid4())
+            received_conv_id = request.get("conversation_id")
+            conversation_id = received_conv_id if received_conv_id else str(uuid.uuid4())
             session_id = request.get("session_id")  # ID da sessão Claude SDK (opcional)
-            print(f"🔍 Processando: message={message[:50]}..., conv_id={conversation_id}, session_id={session_id}")
+            is_new_session = not received_conv_id and not session_id  # Nova sessão apenas se não tiver conversation_id E nem session_id
+
+            if is_new_session:
+                print(f"✨ NOVA SESSÃO CRIADA: conv_id={conversation_id}")
+
+            print(f"🔍 Processando: message={message[:50]}..., conv_id={conversation_id}, session_id={session_id}, new_session={is_new_session}")
 
             # Criar conversa se não existir
             if conversation_id not in conversations:
@@ -404,10 +410,10 @@ async def websocket_chat(websocket: WebSocket):
                 "conversation_id": conversation_id
             })
 
-            # Processar com Claude SDK (passar conversation_id e session_id)
+            # Processar com Claude SDK (passar conversation_id, session_id e is_new_session)
             try:
                 print(f"🤖 Iniciando processamento com Claude SDK...")
-                async for chunk in process_with_claude(message, conversation_id, session_id):
+                async for chunk in process_with_claude(message, conversation_id, session_id, is_new_session):
                     await websocket.send_json(chunk)
 
                     # Salvar mensagem do assistant
@@ -434,22 +440,30 @@ async def websocket_chat(websocket: WebSocket):
         print("Cliente desconectado")
 
 
-async def process_with_claude(message: str, conversation_id: str | None = None, session_id: str | None = None) -> AsyncIterator[dict]:
+async def process_with_claude(message: str, conversation_id: str | None = None, session_id: str | None = None, is_new_session: bool = False) -> AsyncIterator[dict]:
     """Processa mensagem com Claude SDK e retorna chunks.
 
     Args:
         message: Mensagem do usuário
         conversation_id: ID da conversa RAM (mantém contexto se fornecido)
         session_id: ID da sessão Claude SDK (.jsonl) - sobrescreve conversation_id se fornecido
+        is_new_session: Se True, força criação de nova sessão sem resume
     """
 
     # Se session_id foi fornecido, usar ele para resume (sessão .jsonl persistente)
     # Caso contrário, usar conversation_id (memória RAM)
     resume_id = session_id if session_id else conversation_id
 
-    # Só resume se há histórico (para conversation_id) ou se session_id foi fornecido
+    # Só resume se NÃO for nova sessão E (há histórico para conversation_id OU tem session_id)
     conversation = conversations.get(conversation_id) if conversation_id else None
-    has_history = (conversation and len(conversation.messages) > 1) or bool(session_id)
+    has_history = not is_new_session and ((conversation and len(conversation.messages) > 1) or bool(session_id))
+
+    resume_value = resume_id if has_history else None
+    # continue_conversation=True conflita com resume quando há session_id
+    # Usar apenas quando continuar conversa em RAM sem session_id
+    should_continue = not is_new_session and not session_id
+
+    print(f"🔧 ClaudeAgentOptions: continue_conversation={should_continue}, resume={resume_value}")
 
     options = ClaudeAgentOptions(
         system_prompt=(
@@ -460,8 +474,8 @@ async def process_with_claude(message: str, conversation_id: str | None = None, 
         model="claude-sonnet-4-5",
         max_turns=10,
         permission_mode="bypassPermissions",
-        continue_conversation=True,
-        resume=resume_id if has_history else None
+        continue_conversation=should_continue,
+        resume=resume_value
     )
 
     full_content = ""
