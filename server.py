@@ -4,7 +4,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional, List
 import json
 import uuid
 
@@ -51,21 +51,21 @@ class Message(BaseModel):
     role: str
     content: str
     timestamp: str
-    thinking: str | None = None
+    thinking: Optional[str] = None
 
 
 class Conversation(BaseModel):
     """Conversa completa."""
     id: str
-    messages: list[Message]
+    messages: List[Message]
     created_at: str
 
 
 class ChatRequest(BaseModel):
     """Request de mensagem."""
     message: str
-    conversation_id: str | None = None
-    session_id: str | None = None  # ID da sessão Claude SDK para resume
+    conversation_id: Optional[str] = None
+    session_id: Optional[str] = None  # ID da sessão Claude SDK para resume
 
 
 class CodeExecutionRequest(BaseModel):
@@ -94,7 +94,7 @@ async def get_pending_neo4j_operations():
 
 
 @app.post("/neo4j/mark_processed")
-async def mark_neo4j_operations_processed(operation_ids: list[int]):
+async def mark_neo4j_operations_processed(operation_ids: List[int]):
     """Marca operações como processadas."""
     global neo4j_operations_queue
 
@@ -198,6 +198,64 @@ async def get_session(session_id: str):
                 "messages": messages,
                 "count": len(messages)
             }
+
+    return {"error": "Session not found"}, 404
+
+
+class DeleteMessageRequest(BaseModel):
+    """Request para deletar mensagem."""
+    message_id: Optional[str] = None
+    line_index: Optional[int] = None
+
+
+@app.delete("/sessions/{session_id}/messages")
+async def delete_session_message(session_id: str, request: DeleteMessageRequest):
+    """Remove mensagem específica de uma sessão .jsonl."""
+    from pathlib import Path
+
+    # Procurar arquivo .jsonl
+    projects_path = Path.home() / ".claude" / "projects"
+
+    for jsonl_file in projects_path.rglob("*.jsonl"):
+        if session_id in jsonl_file.name:
+            try:
+                # Ler todas as linhas
+                with open(jsonl_file, 'r') as f:
+                    lines = f.readlines()
+
+                # Encontrar linha a remover
+                line_to_remove = None
+
+                if request.line_index is not None and 0 <= request.line_index < len(lines):
+                    line_to_remove = request.line_index
+                elif request.message_id:
+                    for i, line in enumerate(lines):
+                        try:
+                            data = json.loads(line.strip())
+                            if data.get("id") == request.message_id or data.get("messageId") == request.message_id:
+                                line_to_remove = i
+                                break
+                        except:
+                            continue
+
+                if line_to_remove is None:
+                    return {"error": "Message not found"}, 404
+
+                # Remover linha
+                lines.pop(line_to_remove)
+
+                # Reescrever arquivo
+                with open(jsonl_file, 'w') as f:
+                    f.writelines(lines)
+
+                return {
+                    "success": True,
+                    "removed_index": line_to_remove,
+                    "remaining_count": len(lines)
+                }
+
+            except Exception as e:
+                return {"error": f"Failed to delete message: {str(e)}"}, 500
 
     return {"error": "Session not found"}, 404
 
@@ -320,7 +378,7 @@ async def websocket_chat(websocket: WebSocket):
         print("Cliente desconectado")
 
 
-async def process_with_claude(message: str, conversation_id: str | None = None, session_id: str | None = None) -> AsyncIterator[dict]:
+async def process_with_claude(message: str, conversation_id: Optional[str] = None, session_id: Optional[str] = None) -> AsyncIterator[dict]:
     """Processa mensagem com Claude SDK e retorna chunks.
 
     Args:
@@ -338,12 +396,7 @@ async def process_with_claude(message: str, conversation_id: str | None = None, 
     has_history = (conversation and len(conversation.messages) > 1) or bool(session_id)
 
     options = ClaudeAgentOptions(
-        system_prompt=(
-            "Você é um assistente útil e conciso. "
-            "Responda em português de forma clara e objetiva. "
-            "Use markdown para formatar respostas."
-        ),
-        model="claude-sonnet-4-5",
+        model="claude-haiku-4-5-20251001",
         max_turns=10,
         permission_mode="bypassPermissions",
         continue_conversation=True,
