@@ -23,6 +23,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     TextBlock,
     ThinkingBlock,
+    ToolUseBlock,
+    ToolResultBlock,
     ResultMessage,
 )
 
@@ -72,6 +74,12 @@ class CodeExecutionRequest(BaseModel):
     """Request para executar código."""
     code: str
     language: str = "python"
+
+
+class DeleteMessageRequest(BaseModel):
+    """Request para remover mensagem de sessão JSONL."""
+    message_id: str | None = None
+    line_index: int | None = None
 
 
 @app.get("/")
@@ -132,11 +140,20 @@ async def get_conversation(conversation_id: str):
     return conversations[conversation_id]
 
 
+def find_session_file(session_id: str) -> Path | None:
+    """Localiza arquivo JSONL correspondente ao session_id."""
+    projects_path = Path.home() / ".claude" / "projects"
+
+    for jsonl_file in projects_path.rglob("*.jsonl"):
+        if session_id in jsonl_file.name:
+            return jsonl_file
+
+    return None
+
+
 @app.get("/sessions")
 async def list_sessions():
     """Lista todas as sessões .jsonl disponíveis."""
-    from pathlib import Path
-
     projects_path = Path.home() / ".claude" / "projects"
     sessions = []
 
@@ -175,31 +192,128 @@ async def list_sessions():
 @app.get("/sessions/{session_id}")
 async def get_session(session_id: str):
     """Retorna sessão .jsonl do Claude SDK."""
-    from pathlib import Path
+    jsonl_file = find_session_file(session_id)
 
-    # Procurar arquivo .jsonl
-    projects_path = Path.home() / ".claude" / "projects"
+    if not jsonl_file:
+        return {"error": "Session not found"}, 404
 
-    for jsonl_file in projects_path.rglob("*.jsonl"):
-        if session_id in jsonl_file.name:
-            messages = []
-            with open(jsonl_file, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            messages.append(json.loads(line))
-                        except:
-                            pass
+    messages = []
+    with open(jsonl_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    messages.append(json.loads(line))
+                except:
+                    pass
 
-            return {
-                "session_id": session_id,
-                "file": str(jsonl_file),
-                "messages": messages,
-                "count": len(messages)
-            }
+    return {
+        "session_id": session_id,
+        "file": str(jsonl_file),
+        "messages": messages,
+        "count": len(messages)
+    }
 
-    return {"error": "Session not found"}, 404
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """Remove completamente uma sessão (arquivo JSONL)."""
+    jsonl_file = find_session_file(session_id)
+    if not jsonl_file:
+        return {"error": "Session not found"}, 404
+
+    try:
+        jsonl_file.unlink()
+        return {
+            "success": True,
+            "session_id": session_id,
+            "file": str(jsonl_file)
+        }
+    except Exception as e:
+        return {"error": f"Falha ao remover sessão: {str(e)}"}, 500
+
+
+@app.delete("/sessions/{session_id}/messages")
+async def delete_session_message(session_id: str, request: DeleteMessageRequest):
+    """Remove uma mensagem específica do arquivo JSONL da sessão."""
+    if not request.message_id and request.line_index is None:
+        return {"error": "message_id ou line_index são obrigatórios"}, 400
+
+    jsonl_file = find_session_file(session_id)
+    if not jsonl_file:
+        return {"error": "Session not found"}, 404
+
+    kept_lines: list[str] = []
+    removed_entries: list[dict] = []
+
+    target_indices: set[int] = set()
+    if request.line_index is not None and request.line_index >= 0:
+        target_indices.add(request.line_index)
+
+    with open(jsonl_file, 'r', encoding='utf-8') as source:
+        for idx, raw_line in enumerate(source):
+            stripped = raw_line.strip()
+
+            if not stripped:
+                if idx not in target_indices:
+                    kept_lines.append(raw_line)
+                continue
+
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError:
+                if idx not in target_indices:
+                    kept_lines.append(raw_line)
+                continue
+
+            match = False
+
+            if idx in target_indices:
+                match = True
+
+            if request.message_id and not match:
+                candidates = [
+                    data.get("messageId"),
+                    data.get("id"),
+                    data.get("uuid"),
+                ]
+
+                msg = data.get("message")
+                if isinstance(msg, dict):
+                    candidates.extend([
+                        msg.get("id"),
+                        msg.get("messageId"),
+                    ])
+
+                if request.message_id in [c for c in candidates if c]:
+                    match = True
+
+            if match:
+                removed_entries.append(data)
+            else:
+                kept_lines.append(raw_line)
+
+    if not removed_entries:
+        return {"error": "Mensagem não encontrada"}, 404
+
+    temp_path = jsonl_file.with_suffix(jsonl_file.suffix + ".tmp")
+    with open(temp_path, 'w', encoding='utf-8') as target:
+        target.writelines(kept_lines)
+
+    temp_path.replace(jsonl_file)
+
+    return {
+        "session_id": session_id,
+        "removed_count": len(removed_entries),
+        "removed_ids": [
+            entry.get("messageId")
+            or entry.get("id")
+            or entry.get("uuid")
+            or (entry.get("message", {}) if isinstance(entry.get("message"), dict) else {}).get("id")
+        for entry in removed_entries
+        ],
+        "remaining_messages": len(kept_lines)
+    }
 
 
 class DeleteMessageRequest(BaseModel):
@@ -322,9 +436,15 @@ async def websocket_chat(websocket: WebSocket):
             print(f"📨 Mensagem recebida: {data}")
 
             message = request.get("message", "")
-            conversation_id = request.get("conversation_id") or str(uuid.uuid4())
+            received_conv_id = request.get("conversation_id")
+            conversation_id = received_conv_id if received_conv_id else str(uuid.uuid4())
             session_id = request.get("session_id")  # ID da sessão Claude SDK (opcional)
-            print(f"🔍 Processando: message={message[:50]}..., conv_id={conversation_id}, session_id={session_id}")
+            is_new_session = not received_conv_id and not session_id  # Nova sessão apenas se não tiver conversation_id E nem session_id
+
+            if is_new_session:
+                print(f"✨ NOVA SESSÃO CRIADA: conv_id={conversation_id}")
+
+            print(f"🔍 Processando: message={message[:50]}..., conv_id={conversation_id}, session_id={session_id}, new_session={is_new_session}")
 
             # Criar conversa se não existir
             if conversation_id not in conversations:
@@ -348,10 +468,10 @@ async def websocket_chat(websocket: WebSocket):
                 "conversation_id": conversation_id
             })
 
-            # Processar com Claude SDK (passar conversation_id e session_id)
+            # Processar com Claude SDK (passar conversation_id, session_id e is_new_session)
             try:
                 print(f"🤖 Iniciando processamento com Claude SDK...")
-                async for chunk in process_with_claude(message, conversation_id, session_id):
+                async for chunk in process_with_claude(message, conversation_id, session_id, is_new_session):
                     await websocket.send_json(chunk)
 
                     # Salvar mensagem do assistant
@@ -378,33 +498,43 @@ async def websocket_chat(websocket: WebSocket):
         print("Cliente desconectado")
 
 
-async def process_with_claude(message: str, conversation_id: Optional[str] = None, session_id: Optional[str] = None) -> AsyncIterator[dict]:
+async def process_with_claude(message: str, conversation_id: str | None = None, session_id: str | None = None, is_new_session: bool = False) -> AsyncIterator[dict]:
     """Processa mensagem com Claude SDK e retorna chunks.
 
     Args:
         message: Mensagem do usuário
         conversation_id: ID da conversa RAM (mantém contexto se fornecido)
         session_id: ID da sessão Claude SDK (.jsonl) - sobrescreve conversation_id se fornecido
+        is_new_session: Se True, força criação de nova sessão sem resume
     """
 
     # Se session_id foi fornecido, usar ele para resume (sessão .jsonl persistente)
     # Caso contrário, usar conversation_id (memória RAM)
     resume_id = session_id if session_id else conversation_id
 
-    # Só resume se há histórico (para conversation_id) ou se session_id foi fornecido
+    # Só resume se NÃO for nova sessão E (há histórico para conversation_id OU tem session_id)
     conversation = conversations.get(conversation_id) if conversation_id else None
-    has_history = (conversation and len(conversation.messages) > 1) or bool(session_id)
+    has_history = not is_new_session and ((conversation and len(conversation.messages) > 1) or bool(session_id))
+
+    resume_value = resume_id if has_history else None
+    # continue_conversation=True conflita com resume quando há session_id
+    # Usar apenas quando continuar conversa em RAM sem session_id
+    should_continue = not is_new_session and not session_id
+
+    print(f"🔧 ClaudeAgentOptions: continue_conversation={should_continue}, resume={resume_value}")
 
     options = ClaudeAgentOptions(
         model="claude-haiku-4-5-20251001",
         max_turns=10,
         permission_mode="bypassPermissions",
-        continue_conversation=True,
-        resume=resume_id if has_history else None
+        continue_conversation=should_continue,
+        resume=resume_value
     )
 
     full_content = ""
     thinking_content = ""
+
+    tool_names: dict[str, str] = {}
 
     try:
         async with ClaudeSDKClient(options=options) as client:
@@ -430,6 +560,35 @@ async def process_with_claude(message: str, conversation_id: Optional[str] = Non
                             yield {
                                 "type": "thinking",
                                 "content": block.thinking
+                            }
+
+                        elif isinstance(block, ToolUseBlock):
+                            tool_names[block.id] = block.name
+
+                            yield {
+                                "type": "tool_start",
+                                "tool": block.name,
+                                "tool_use_id": block.id,
+                                "input": block.input,
+                            }
+
+                        elif isinstance(block, ToolResultBlock):
+                            tool_name = tool_names.get(block.tool_use_id, "Ferramenta")
+
+                            if isinstance(block.content, list):
+                                try:
+                                    content_text = json.dumps(block.content, ensure_ascii=False, indent=2)
+                                except Exception:
+                                    content_text = str(block.content)
+                            else:
+                                content_text = block.content or ""
+
+                            yield {
+                                "type": "tool_result",
+                                "tool": tool_name,
+                                "tool_use_id": block.tool_use_id,
+                                "content": content_text,
+                                "is_error": block.is_error,
                             }
 
                 elif isinstance(msg, ResultMessage):

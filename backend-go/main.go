@@ -829,6 +829,79 @@ func main() {
 		})
 	}))
 
+	// Deletar TODAS as sessões de um projeto
+	mux.HandleFunc("DELETE /api/projects/{projectName}/sessions", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		projectName := r.PathValue("projectName")
+		projectPath := filepath.Join(getClaudeProjectsDir(), projectName)
+
+		log.Printf("🗑️  Tentando deletar TODAS as sessões do projeto: %s", projectPath)
+
+		// Validar que o path está dentro do diretório base
+		if err := validatePath(projectPath, getClaudeProjectsDir()); err != nil {
+			log.Printf("❌ Path inválido: %v", err)
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+
+		// Verificar se o diretório existe
+		if _, err := os.Stat(projectPath); os.IsNotExist(err) {
+			log.Printf("❌ Projeto não encontrado: %s", projectPath)
+			http.Error(w, "Project not found", http.StatusNotFound)
+			return
+		}
+
+		// Ler todos os arquivos .jsonl do projeto
+		entries, err := os.ReadDir(projectPath)
+		if err != nil {
+			log.Printf("❌ Erro ao ler diretório: %v", err)
+			http.Error(w, fmt.Sprintf("Error reading project directory: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		deletedCount := 0
+		var errors []string
+
+		for _, file := range entries {
+			if !file.IsDir() && filepath.Ext(file.Name()) == ".jsonl" {
+				sessionFile := filepath.Join(projectPath, file.Name())
+
+				// Validar operação de arquivo
+				if err := validateFileOperation(sessionFile, "delete"); err != nil {
+					log.Printf("⚠️  Pulando arquivo inválido: %s - %v", file.Name(), err)
+					errors = append(errors, fmt.Sprintf("%s: %v", file.Name(), err))
+					continue
+				}
+
+				// Deletar o arquivo
+				if err := os.Remove(sessionFile); err != nil {
+					log.Printf("❌ Erro ao deletar %s: %v", file.Name(), err)
+					errors = append(errors, fmt.Sprintf("%s: %v", file.Name(), err))
+				} else {
+					log.Printf("✅ Deletado: %s", file.Name())
+					deletedCount++
+				}
+			}
+		}
+
+		// Invalidar cache do projeto
+		invalidateSessionCache(projectName)
+
+		response := map[string]interface{}{
+			"success":       deletedCount > 0,
+			"deleted_count": deletedCount,
+			"message":       fmt.Sprintf("%d sessão(ões) deletada(s) com sucesso", deletedCount),
+		}
+
+		if len(errors) > 0 {
+			response["errors"] = errors
+			response["message"] = fmt.Sprintf("%d sessão(ões) deletada(s), %d erro(s)", deletedCount, len(errors))
+		}
+
+		json.NewEncoder(w).Encode(response)
+	}))
+
 	// Deletar uma sessão específica
 	mux.HandleFunc("DELETE /api/projects/{projectName}/sessions/{sessionID}", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
