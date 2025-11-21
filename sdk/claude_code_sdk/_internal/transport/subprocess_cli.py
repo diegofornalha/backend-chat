@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Subprocess transport implementation using Claude Code CLI."""
 
 import json

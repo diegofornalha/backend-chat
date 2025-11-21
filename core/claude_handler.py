@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Handler para integração com Claude Code SDK."""
 
 import sys

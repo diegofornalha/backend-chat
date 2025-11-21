@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Sistema de logging centralizado
 Remove necessidade de salvar logs no localStorage do browser
@@ -89,7 +90,7 @@ async def write_to_file(log_data: dict):
     log_file = log_dir / f"app_{datetime.now().strftime('%Y%m%d')}.log"
     
     def write():
-        with open(log_file, "a") as f:
+        with open(log_file, "a", encoding='utf-8') as f:
             f.write(json.dumps(log_data, default=str) + "\n")
     
     loop = asyncio.get_event_loop()

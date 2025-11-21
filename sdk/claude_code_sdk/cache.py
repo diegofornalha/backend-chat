@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Advanced caching system for Claude SDK responses.
 
 This module provides a sophisticated caching system with support for:
@@ -265,7 +267,7 @@ class DiskCacheBackend(CacheBackend[T]):
         async with self._lock:
             if self._metadata_file.exists():
                 try:
-                    with open(self._metadata_file, 'r') as f:
+                    with open(self._metadata_file, 'r', encoding='utf-8') as f:
                         self._metadata = json.load(f)
                 except Exception as e:
                     logger.warning(f"Failed to load cache metadata: {e}")
@@ -274,7 +276,7 @@ class DiskCacheBackend(CacheBackend[T]):
     async def _save_metadata(self) -> None:
         """Save metadata to disk."""
         try:
-            with open(self._metadata_file, 'w') as f:
+            with open(self._metadata_file, 'w', encoding='utf-8') as f:
                 json.dump(self._metadata, f)
         except Exception as e:
             logger.warning(f"Failed to save cache metadata: {e}")

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Rotas da API para gerenciamento de histórico de conversação
 """
@@ -69,7 +71,7 @@ def get_or_create_client(session_id: str) -> ExtendedClaudeClient:
         # Tentar carregar histórico existente
         history_file = HISTORY_DIR / f"{session_id}.json"
         if history_file.exists():
-            with open(history_file, 'r') as f:
+            with open(history_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 # Restaurar histórico
                 for msg in data.get('messages', []):
@@ -99,7 +101,7 @@ def save_session_history(session_id: str):
             "metrics": client.get_metrics()
         }
         
-        with open(history_file, 'w') as f:
+        with open(history_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str)
 
 

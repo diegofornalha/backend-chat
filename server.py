@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Backend do chat com Claude SDK - Streaming real."""
 
 import sys
+import io
+
+# Força UTF-8 em todas as operações de I/O
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 from pathlib import Path
 from datetime import datetime
 from typing import AsyncIterator, Optional, List
@@ -160,7 +167,7 @@ async def list_sessions():
     for jsonl_file in projects_path.rglob("*.jsonl"):
         try:
             # Ler primeira e última linha para metadata
-            with open(jsonl_file, 'r') as f:
+            with open(jsonl_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
                 if not lines:
                     continue
@@ -198,7 +205,7 @@ async def get_session(session_id: str):
         return {"error": "Session not found"}, 404
 
     messages = []
-    with open(jsonl_file, 'r') as f:
+    with open(jsonl_file, 'r', encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if line:
@@ -334,7 +341,7 @@ async def delete_session_message(session_id: str, request: DeleteMessageRequest)
         if session_id in jsonl_file.name:
             try:
                 # Ler todas as linhas
-                with open(jsonl_file, 'r') as f:
+                with open(jsonl_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
 
                 # Encontrar linha a remover
@@ -359,7 +366,7 @@ async def delete_session_message(session_id: str, request: DeleteMessageRequest)
                 lines.pop(line_to_remove)
 
                 # Reescrever arquivo
-                with open(jsonl_file, 'w') as f:
+                with open(jsonl_file, 'w', encoding='utf-8') as f:
                     f.writelines(lines)
 
                 return {
